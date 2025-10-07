@@ -5,9 +5,11 @@ import pathway as pw
 from pathway.internals import ReducerExpression
 from pathway.stdlib.temporal import Window
 
+from streamdaq.StatisticalProfiler import StatisticalProfiler
 from streamdaq.artificial_stream_generators import generate_artificial_random_viewership_data_stream as artificial
 from streamdaq.utils import create_comparison_function, extract_violation_count
 from streamdaq.SchemaValidator import SchemaValidator
+from streamdaq.AutoProfiler import AutoProfiler
 
 
 class StreamDaQ:
@@ -42,6 +44,7 @@ class StreamDaQ:
         self.sink_file_name = None
         self.sink_operation = None
         self.schema_validator = None
+        self.autoprofiler = None
 
     def configure(
             self,
@@ -56,7 +59,8 @@ class StreamDaQ:
             source: pw.internals.Table | None = None,
             sink_file_name: str = None,
             sink_operation: Callable[[pw.internals.Table], None] | None = None,
-            schema_validator: SchemaValidator | None = None
+            schema_validator: SchemaValidator | None = None,
+            autoprofiler: AutoProfiler | None = None
     ) -> Self:
         """
         Configures the DQ monitoring parameters. Specifying a window object, the key instance and the time column name
@@ -76,6 +80,7 @@ class StreamDaQ:
         :param sink_file_name: the name of the file to write the output to
         :param sink_operation: the operation to perform in order to send data out of Stream DaQ, e.g., a Kafka topic.
         :param schema_validator: an optional schema validator to apply on the input data stream
+        :param autoprofiler: an optional autoprofiler to attach to the data quality monitoring process
         :return: a self reference, so that you can use your favorite, Spark-like, functional syntax :)
         """
         self.window = window
@@ -102,6 +107,7 @@ class StreamDaQ:
         self.sink_file_name = sink_file_name
         self.sink_operation = sink_operation
         self.schema_validator = schema_validator
+        self.autoprofiler = autoprofiler
         return self
 
     def add(
@@ -195,6 +201,27 @@ class StreamDaQ:
         if not self.schema_validator.settings().filter_respecting_records:
             return data
         return data.filter(pw.this._validation_metadata[0] == True)
+
+    def _attach_profiler(self, data: pw.Table) -> pw.Table:
+        if not self.autoprofiler:
+            self.autoprofiler = StatisticalProfiler()
+            return data
+
+        profiling_measures = self.autoprofiler.set_measures(data, self.time_column, self.instance)
+
+        # Keep the same windowing parameters as the main quality meta-stream
+        profiling_data = data.windowby(
+            data[self.time_column],
+            window=self.window,
+            instance=data[self.instance] if self.instance else None,
+            behavior=self.window_behavior or pw.temporal.exactly_once_behavior(shift=self.wait_for_late),
+        ).reduce(**profiling_measures)
+
+        # Produce streamdaq like alerts from profiling data
+        alerts = self.autoprofiler.consume_profiling_measures(profiling_data)
+
+        return alerts
+
 
     def _window_measure_and_asses(self, data: pw.Table) -> pw.Table:
         if self.schema_validator:
@@ -318,6 +345,7 @@ class StreamDaQ:
         data = self._validate_schema_if_needed(data)
         deflected_data = self._deflect_violations_if_needed(data)
         data = self._keep_compliant_data_if_needed(data)
+        profiling_assessment = self._attach_profiler(data) # Profiling assessment will be joined with quality meta-stream table later
         quality_meta_stream = self._window_measure_and_asses(data)
         alerts = self._raise_alerts_if_needed(quality_meta_stream)
         quality_meta_stream = self._remove_error_messages_if_needed(quality_meta_stream)
