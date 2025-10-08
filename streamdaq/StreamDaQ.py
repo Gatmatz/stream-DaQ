@@ -202,28 +202,7 @@ class StreamDaQ:
             return data
         return data.filter(pw.this._validation_metadata[0] == True)
 
-    def _attach_profiler(self, data: pw.Table) -> pw.Table:
-        if not self.autoprofiler:
-            self.autoprofiler = StatisticalProfiler()
-            return data
-
-        profiling_measures = self.autoprofiler.set_measures(data, self.time_column, self.instance)
-
-        # Keep the same windowing parameters as the main quality meta-stream
-        profiling_data = data.windowby(
-            data[self.time_column],
-            window=self.window,
-            instance=data[self.instance] if self.instance else None,
-            behavior=self.window_behavior or pw.temporal.exactly_once_behavior(shift=self.wait_for_late),
-        ).reduce(**profiling_measures)
-
-        # Produce streamdaq like alerts from profiling data
-        alerts = self.autoprofiler.consume_profiling_measures(profiling_data)
-
-        return alerts
-
-
-    def _window_measure_and_asses(self, data: pw.Table) -> pw.Table:
+    def _window(self, data: pw.Table) -> pw.Table:
         if self.schema_validator:
             column_name = self.schema_validator.settings().column_name
             data = data.with_columns(
@@ -243,7 +222,25 @@ class StreamDaQ:
             instance=data[self.instance] if self.instance else None,
             behavior=self.window_behavior or pw.temporal.exactly_once_behavior(shift=self.wait_for_late),
             # TODO (Vassilis) handle the case int | timedelta (in another PR)
-        ).reduce(**self.measures)
+        )
+
+
+    def _measure_and_asses(self, data: pw.GroupedTable) -> pw.Table:
+        return data.reduce(**self.measures)
+
+    def _attach_profiler(self, data: pw.GroupedTable) -> pw.Table:
+        if not self.autoprofiler:
+            self.autoprofiler = StatisticalProfiler()
+
+        profiling_measures = self.autoprofiler.set_measures(data, self.time_column, self.instance)
+
+        # Keep the same windowing parameters as the main quality meta-stream
+        profiling_data = data.reduce(**profiling_measures)
+
+        # Produce streamdaq like alerts from profiling data
+        alerts = self.autoprofiler.consume_profiling_measures(profiling_data)
+
+        return profiling_data
 
     def _raise_alerts_if_needed(self, data: pw.Table) -> pw.Table | None:
         """Raises alerts only if alerting behavior is configured to be
@@ -345,8 +342,11 @@ class StreamDaQ:
         data = self._validate_schema_if_needed(data)
         deflected_data = self._deflect_violations_if_needed(data)
         data = self._keep_compliant_data_if_needed(data)
-        profiling_assessment = self._attach_profiler(data) # Profiling assessment will be joined with quality meta-stream table later
-        quality_meta_stream = self._window_measure_and_asses(data)
+        windowed_stream = self._window(data)
+        # todo: keep the window_start and window_end columns
+        profiling_assessment = self._attach_profiler(windowed_stream) # Profiling assessment will be joined with quality meta-stream table later
+        quality_meta_stream = self._measure_and_asses(windowed_stream)
+        pw.io.null.write(profiling_assessment)  # Force computation of profiling assessment
         alerts = self._raise_alerts_if_needed(quality_meta_stream)
         quality_meta_stream = self._remove_error_messages_if_needed(quality_meta_stream)
 

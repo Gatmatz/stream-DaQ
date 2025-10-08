@@ -1,24 +1,32 @@
 from collections import defaultdict, deque
 
+import numpy as np
 import pathway as pw
 from streamdaq.DaQMeasures import DaQMeasures
 from streamdaq.AutoProfiler import AutoProfiler
 
 class StatisticalProfiler(AutoProfiler):
-    def __init__(self, window_size=10):
+    def __init__(self, window_size=5, warmup_time=2, anomaly_threshold_method='iqr'):
         self.nof_summaries = 0
         self.window_size = window_size
+        self.warmup_time = warmup_time
         self.rolling_history = defaultdict(lambda: deque(maxlen=window_size))
         self.rolling_means = {}
+        self.windows_processed = 0
 
-    def set_measures(self, data, time_column, instance):
+        # Statistical anomaly detection parameters
+        self.anomaly_threshold_method = anomaly_threshold_method
+        self.anomaly_scores_history = deque(maxlen=window_size)
+        self.anomaly_threshold = 0
+
+    def set_measures(self, data, time_column, instance) -> dict:
         profiling_measures = {}
 
         # Identify numeric columns
         numeric_columns = []
 
         for col_name in data.column_names():
-            if col_name not in [time_column, instance, '_validation_metadata']:
+            if col_name not in [time_column, instance, '_validation_metadata'] and not col_name.startswith('_pw'):
                 try:
                     test_col = pw.cast(float, data[col_name])
                     numeric_columns.append(col_name)
@@ -34,10 +42,11 @@ class StatisticalProfiler(AutoProfiler):
             profiling_measures[f"{col_name}_missing_percentage_prof"] = DaQMeasures.missing_fraction(col_name, precision=3)
 
         self.nof_summaries = int(len(profiling_measures) / len(numeric_columns) if numeric_columns else 0)
-
         # todo: Identify categorical columns and implement peculiarity measure
         # categorical_columns = []
         # for col_name in data.column_names():
+        profiling_measures["_pw_window_start"] = pw.this._pw_window_start
+        profiling_measures["_pw_window_end"] = pw.this._pw_window_end
 
         return profiling_measures
 
@@ -54,6 +63,10 @@ class StatisticalProfiler(AutoProfiler):
 
     def compute_anomaly_score(self, current_measures):
         """Compute anomaly score based on difference from rolling mean"""
+        # Return 0 during warmup period
+        if self.windows_processed < self.warmup_time:
+            return 0.0
+
         if not self.rolling_means:
             return 0.0
 
@@ -72,23 +85,82 @@ class StatisticalProfiler(AutoProfiler):
         # Return mean of all differences as final anomaly score
         return sum(differences) / len(differences) if differences else 0.0
 
-    def consume_profiling_measures(self, profiling_stream):
-        pw.debug.compute_and_print(profiling_stream)
+    def train_anomaly_threshold(self, current_anomaly_score):
+        """Update statistical threshold for anomaly detection"""
+        self.anomaly_scores_history.append(current_anomaly_score)
 
-        # todo: Extract current profiling measures from the stream
-        current_values = {}
-        for row in profiling_stream:
-            for col_name in profiling_stream.column_names():
-                if col_name not in ['__time__', '__diff__']:  # Skip pathway metadata columns
-                    current_values[col_name] = row[col_name]
+        scores = list(self.anomaly_scores_history)
 
-        print(f"Current profiling measures: {current_values}")
+        if self.anomaly_threshold_method == 'zscore':
+            # Z-score method: threshold at 2 standard deviations
+            mean_score = np.mean(scores)
+            std_score = np.std(scores)
+            self.anomaly_threshold = mean_score + 2 * std_score
+
+        elif self.anomaly_threshold_method == 'percentile':
+            # Percentile method: 95th percentile as threshold
+            self.anomaly_threshold = np.percentile(scores, 95)
+
+        elif self.anomaly_threshold_method == 'iqr':
+            # Interquartile Range method
+            q1 = np.percentile(scores, 25)
+            q3 = np.percentile(scores, 75)
+            iqr = q3 - q1
+            self.anomaly_threshold = q3 + 1.5 * iqr
+
+    def is_anomalous(self, current_anomaly_score):
+        """Determine if current score indicates an anomaly"""
+        if self.anomaly_threshold is None or self.windows_processed <= self.warmup_time:
+            return False
+
+        return current_anomaly_score > self.anomaly_threshold
+
+    def get_anomaly_severity(self, current_score):
+        """Get anomaly severity level"""
+        if not self.is_anomalous(current_score):
+            return "normal"
+
+        if self.anomaly_threshold is None:
+            return "unknown"
+
+        # Calculate severity based on how far above threshold
+        severity_ratio = current_score / self.anomaly_threshold
+
+        if severity_ratio > 2.0:
+            return "critical"
+        elif severity_ratio > 1.5:
+            return "high"
+        else:
+            return "moderate"
+
+    def create_profiling_output(self, profiling_measures) -> pw.Table:
+        return pw.Table.empty
+
+    def window_processor(self, key: pw.Pointer, row: dict, time: int, is_addition: bool):
         # Update rolling means
-        self.update_rolling_means(current_values)
+        self.update_rolling_means(row)
+
+        # Increment windows processed counter
+        self.windows_processed += 1
 
         # Compute anomaly score
-        anomaly_score = self.compute_anomaly_score(current_values)
+        anomaly_score = self.compute_anomaly_score(row)
 
-        print(f"Current anomaly score: {anomaly_score:.4f}")
+        # Update statistical threshold (only after warmup)
+        if self.windows_processed > self.warmup_time:
+            self.train_anomaly_threshold(anomaly_score)
 
-        return anomaly_score
+        # Check if current window is anomalous
+        is_anomalous = self.is_anomalous(anomaly_score)
+        severity = self.get_anomaly_severity(anomaly_score)
+
+        # print(f"Current anomaly score: {anomaly_score:.4f}")
+        # threshold_str = f"{self.anomaly_threshold:.4f}" if self.anomaly_threshold is not None else "Not set"
+        # print(f"Threshold: {threshold_str}")
+        # print(f"Anomalous: {is_anomalous}, Severity: {severity}")
+
+
+    def consume_profiling_measures(self, profiling_stream) -> pw.Table:
+        pw.debug.compute_and_print(profiling_stream)
+        pw.io.subscribe(profiling_stream, self.window_processor)
+        return profiling_stream
