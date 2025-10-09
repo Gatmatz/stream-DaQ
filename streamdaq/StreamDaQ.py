@@ -156,6 +156,47 @@ class StreamDaQ:
             return data
         return self.source
 
+    def _convert_to_native_if_needed(self, data: pw.Table) -> pw.Table:
+        if not self.compact_data:
+            return data
+
+        fields_column = self.compact_data._fields_column
+        values_column = self.compact_data._values_column
+        values_dtype = self.compact_data._values_dtype
+        type_exceptions = self.compact_data._type_exceptions
+
+        def on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool):
+            if self._FIELDS_KEY in self._DAQ_INTERNAL_STATE:
+                # TODO: here we can detect and handle schema evolution!
+                return
+            self._DAQ_INTERNAL_STATE[self._FIELDS_KEY] = row[fields_column]
+            # self._DAQ_INTERNAL_STATE[self._FIELDS_KEY] now contains the field names
+            # e.g., ['temperature', 'pressure']
+
+        pw.io.subscribe(table=data, on_change=on_change)
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+        column_names = self._DAQ_INTERNAL_STATE[self._FIELDS_KEY]
+        compact_to_native_transformations = {
+            column_names[i]: pw.this.values.get(i)
+            for i in range(len(column_names))
+        }
+        # at first define all columns to have the 'default' dtype
+        native_data_types = {
+            column_names[i]: values_dtype
+            for i in range(len(column_names))
+        }
+        # overwrite the default types with the user-specified exceptions, if any
+        if type_exceptions:
+            for column_name, dtype in type_exceptions.items():
+                if column_name in column_names:
+                    native_data_types[column_name] = dtype
+
+        return data \
+            .with_columns(**compact_to_native_transformations) \
+            .update_types(**native_data_types) \
+            .without(fields_column, values_column)
+
     def _validate_schema_if_needed(self, data: pw.Table) -> pw.Table:
         """If schema validation is configured, enriches `data`
         with schema validation metadata and returns the enriched stream
