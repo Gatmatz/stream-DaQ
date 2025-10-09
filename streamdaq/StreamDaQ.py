@@ -9,6 +9,7 @@ from streamdaq.StatisticalProfiler import StatisticalProfiler
 from streamdaq.artificial_stream_generators import generate_artificial_random_viewership_data_stream as artificial
 from streamdaq.utils import create_comparison_function, extract_violation_count
 from streamdaq.SchemaValidator import SchemaValidator
+from streamdaq.CompactData import CompactData
 from streamdaq.AutoProfiler import AutoProfiler
 
 
@@ -23,6 +24,9 @@ class StreamDaQ:
     3. Kick-off DQ monitoring of your data stream, letting Stream DaQ continuously watch out your data, while you
     focus on the important.
     """
+
+    _FIELDS_KEY: str = "FIELDS"
+    _VALUES_KEY: str = "VALUES"
 
     def __init__(self):
         """
@@ -44,23 +48,25 @@ class StreamDaQ:
         self.sink_file_name = None
         self.sink_operation = None
         self.schema_validator = None
-        self.autoprofiler = None
+        self.compact_data = None
+        self._DAQ_INTERNAL_STATE = dict()
 
     def configure(
-            self,
-            window: Window,
-            time_column: str,
-            behavior: pw.temporal.CommonBehavior | pw.temporal.ExactlyOnceBehavior | None = None,
-            instance: str | None = None,
-            wait_for_late: int | float | timedelta | None = None,
-            time_format: str = "%Y-%m-%d %H:%M:%S",
-            show_window_start: bool = True,
-            show_window_end: bool = True,
-            source: pw.internals.Table | None = None,
-            sink_file_name: str = None,
-            sink_operation: Callable[[pw.internals.Table], None] | None = None,
-            schema_validator: SchemaValidator | None = None,
-            autoprofiler: AutoProfiler | None = None
+        self,
+        window: Window,
+        time_column: str,
+        behavior: pw.temporal.CommonBehavior | pw.temporal.ExactlyOnceBehavior | None = None,
+        instance: str | None = None,
+        wait_for_late: int | float | timedelta | None = None,
+        time_format: str = "%Y-%m-%d %H:%M:%S",
+        show_window_start: bool = True,
+        show_window_end: bool = True,
+        source: pw.internals.Table | None = None,
+        sink_file_name: str = None,
+        sink_operation: Callable[[pw.internals.Table], None] | None = None,
+        schema_validator: SchemaValidator | None = None,
+        compact_data: CompactData | None = None,
+        autoprofiler: AutoProfiler | None = None
     ) -> Self:
         """
         Configures the DQ monitoring parameters. Specifying a window object, the key instance and the time column name
@@ -80,6 +86,7 @@ class StreamDaQ:
         :param sink_file_name: the name of the file to write the output to
         :param sink_operation: the operation to perform in order to send data out of Stream DaQ, e.g., a Kafka topic.
         :param schema_validator: an optional schema validator to apply on the input data stream
+        :param compact_data: an optional compact data configuration for working with compact data representations
         :param autoprofiler: an optional autoprofiler to attach to the data quality monitoring process
         :return: a self reference, so that you can use your favorite, Spark-like, functional syntax :)
         """
@@ -108,6 +115,7 @@ class StreamDaQ:
         self.sink_operation = sink_operation
         self.schema_validator = schema_validator
         self.autoprofiler = autoprofiler
+        self.compact_data = compact_data
         return self
 
     def add(
@@ -143,7 +151,8 @@ class StreamDaQ:
                 date_and_time=pw.this.timestamp.dt.strptime(self.time_format),
                 timestamp=pw.cast(float, pw.this.timestamp),
             )
-            print("Data set to artificial" )
+            self.compact_data = None  # The artificial data source is native
+            print("Data set to artificial and data representation to native.")
             return data
         return self.source
 
@@ -339,6 +348,7 @@ class StreamDaQ:
         meta-stream for advanced programmatic handling (see important notice above).
         """
         data = self._get_data_source_or_else_artificial()
+        data = self._convert_to_native_if_needed(data)
         data = self._validate_schema_if_needed(data)
         deflected_data = self._deflect_violations_if_needed(data)
         data = self._keep_compliant_data_if_needed(data)
