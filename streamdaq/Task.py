@@ -7,6 +7,7 @@ from pathway.internals import ReducerExpression
 from pathway.stdlib.temporal import Window
 
 from streamdaq.artificial_stream_generators import generate_artificial_random_viewership_data_stream as artificial
+from streamdaq.assessment_detectors.OnlineNormalThreshold import OnlineNormalThreshold
 from streamdaq.utils import create_comparison_function, extract_violation_count
 from streamdaq.SchemaValidator import SchemaValidator
 from streamdaq.CompactData import CompactData
@@ -150,6 +151,9 @@ class Task:
         measure: pw.ColumnExpression | ReducerExpression,
         must_be: str | Callable[[Any], bool] | None = None,
         name: Optional[str] = None,
+        auto_window_size: Optional[int] = None,
+        auto_warmup_period: int = 2,
+        threshold_method: str = "percentile"
     ) -> Self:
         """
         Add a data quality check to be monitored within the stream windows.
@@ -166,9 +170,17 @@ class Task:
             self.task_output[name] = measure
             return self
 
-        assessment_function = must_be if callable(must_be) else create_comparison_function(must_be)
-        assessment_result = pw.apply_with_type(assessment_function, bool, measure)
-        self.task_output[name] = pw.apply_with_type(tuple, tuple, (measure, assessment_result))
+        if must_be == "auto":
+            self.task_output[name] = measure
+            self._TASK_INTERNAL_STATE[f"_auto_threshold_{name}"] = OnlineNormalThreshold(
+                window_size=auto_window_size,
+                warmup_period=auto_warmup_period,
+                threshold_method=threshold_method
+            )
+        else:
+            assessment_function = must_be if callable(must_be) else create_comparison_function(must_be)
+            assessment_result = pw.apply_with_type(assessment_function, bool, measure)
+            self.task_output[name] = pw.apply_with_type(tuple, tuple, (measure, assessment_result))
         return self
 
     def _get_data_source_or_else_artificial(self) -> pw.Table:
@@ -243,18 +255,19 @@ class Task:
             return data
         return data.filter(pw.this._validation_metadata[0] == True)
 
-    def _window_measure_and_assess(self, data: pw.Table) -> pw.Table:
-        """Apply windowing and compute measures and assessments."""
+    def _window(self, data: pw.Table) -> pw.Table:
         if self.schema_validator:
             column_name = self.schema_validator.settings().column_name
             data = data.with_columns(
                 **{column_name: pw.apply_with_type(extract_violation_count, int, pw.this._validation_metadata[1])},
                 error_messages=pw.apply_with_type(
-                    lambda x: None if x == "" else x, str | None, pw.this._validation_metadata[1]
-                ),
+                    lambda x: None if x == '' else x,
+                    str | None,
+                    pw.this._validation_metadata[1]
+                )
             )
             self.task_output[self.schema_validator.settings().column_name] = pw.reducers.sum(pw.this[column_name])
-            self.task_output["error_messages"] = pw.reducers.tuple(pw.this.error_messages, skip_nones=True)
+            self.task_output['error_messages'] = pw.reducers.tuple(pw.this.error_messages, skip_nones=True)
 
         return data.windowby(
             data[self.time_column],
@@ -262,7 +275,36 @@ class Task:
             instance=data[self.instance] if self.instance else None,
             behavior=self.window_behavior or pw.temporal.exactly_once_behavior(shift=self.wait_for_late),
             # TODO (Vassilis) handle the case int | timedelta (in another PR)
-        ).reduce(**self.task_output)
+        )
+
+    def _measure_and_asses(self, data: pw.GroupedTable) -> pw.Table:
+        # First compute all measures
+        measured_data = data.reduce(**self.task_output)
+
+        # Then apply assessments to the computed values
+        assessment_results = {}
+        for name, assessment in self.task_output.items():
+           if callable(assessment): # Skip window columns
+               continue
+           else:
+                # Apply auto assessment using the detector
+                detector_key = f"_auto_threshold_{name}"
+                if not detector_key in self._TASK_INTERNAL_STATE:
+                    continue
+                else:
+                    detector = self._TASK_INTERNAL_STATE[detector_key]
+
+                    def auto_assessment_function(value):
+                        return detector.check_window(value)
+
+                    assessment_results[f"{name}"] = pw.apply_with_type(
+                        auto_assessment_function, str, measured_data[name]
+                    )
+
+                    if assessment_results:
+                        measured_data = measured_data.with_columns(**assessment_results)
+
+        return measured_data
 
     def _raise_alerts_if_needed(self, data: pw.Table) -> pw.Table | None:
         """Raises alerts only if alerting behavior is configured."""
@@ -288,7 +330,7 @@ class Task:
         return quality_meta_stream.select(**cols_to_keep)
 
     def _send_to_sinks_if_needed(
-        self, quality_meta_stream: pw.Table, violations: pw.Table | None, alerts: pw.Table | None
+            self, quality_meta_stream: pw.Table, violations: pw.Table | None, alerts: pw.Table | None
     ) -> None:
         """Sends the quality meta-stream, violations, and alerts to configured sinks."""
         # sink for quality meta-stream (always needed) - defaults to console
@@ -317,7 +359,8 @@ class Task:
             data = self._validate_schema_if_needed(data)
             deflected_data = self._deflect_violations_if_needed(data)
             data = self._keep_compliant_data_if_needed(data)
-            quality_meta_stream = self._window_measure_and_assess(data)
+            windowed_stream = self._window(data)
+            quality_meta_stream = self._measure_and_asses(windowed_stream)
             alerts = self._raise_alerts_if_needed(quality_meta_stream)
             quality_meta_stream = self._remove_error_messages_if_needed(quality_meta_stream)
 
