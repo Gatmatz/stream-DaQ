@@ -49,17 +49,16 @@ class AdaptableDampedReservoir:
                 heapq.heappush(self.overweight_items, item)
             else:
                 if ran < probability_of_insertion:
-                    replace_index = self._rand.nextInt(len(self._reservoir) - 1)
-                    print(replace_index)
+                    replace_index = self._rand.nextInt(len(self._reservoir))
                     self._reservoir[replace_index] = record
 
     def _update_overweight_items(self) -> None:
         while self.overweight_items:
             ow = self.overweight_items[0]
-
-            if self.capacity * ow.weight / self._running_count <= 1:
+            ow_weight = -ow.sort_index
+            if self.capacity * ow_weight / self._running_count <= 1:
                 heapq.heappop(self.overweight_items)
-                self.insert(ow.record, ow.weight)
+                self.insert(ow.record, ow_weight)
             else:
                 return
 
@@ -74,7 +73,8 @@ class AdaptableDampedReservoir:
 
         updated_overweight_items = []
         for item in self.overweight_items:
-            updated_item = OverweightItem(item.record, item.weight * decay)
+            weight = -item.sort_index
+            updated_item = OverweightItem(item.record, weight * decay)
             updated_overweight_items.append(updated_item)
 
         self.overweight_items.clear()
