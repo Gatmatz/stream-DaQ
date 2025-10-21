@@ -2,7 +2,7 @@ import math
 from typing import List
 import pathway as pw
 
-class MAD:
+class MADScorer:
     def __init__(self) -> None:
         self.median: float = 0.0
         self.MAD: float = 0.0
@@ -14,7 +14,7 @@ class MAD:
         if not data:
             raise ValueError("data must not be empty")
 
-        metrics = [float(r.current) for r in data]
+        metrics = [float(r) for r in data]
         metrics.sort()
         n = len(metrics)
 
@@ -42,7 +42,7 @@ class MAD:
                 self.MAD = s / (upper - lower)
 
     def score(self, record) -> float:
-        point = float(record.current)
+        point = float(record)
         if self.MAD == 0:
             # return large value if MAD is zero (shouldn't happen after train)
             return float("inf")

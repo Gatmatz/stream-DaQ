@@ -7,6 +7,7 @@ from pathway.internals import ReducerExpression
 from pathway.stdlib.temporal import Window
 
 from streamdaq.artificial_stream_generators import generate_artificial_random_viewership_data_stream as artificial
+from streamdaq.assessment_detectors.macrobase.MDPDetector import MDPDetector
 from streamdaq.assessment_detectors.OnlineNormalThreshold import OnlineNormalThreshold
 from streamdaq.utils import create_comparison_function, extract_violation_count
 from streamdaq.SchemaValidator import SchemaValidator
@@ -15,7 +16,7 @@ from streamdaq.CompactData import CompactData
 # This is for improved developer experience using type annotations
 # See https://tinyurl.com/4cycs6jn for reference
 if TYPE_CHECKING:
-    from streamdaq.StreamDaQ import StreamDaQ
+    pass
 
 
 class Task:
@@ -170,13 +171,25 @@ class Task:
             self.task_output[name] = measure
             return self
 
-        if must_be == "auto":
+        if must_be == "online_normal":
             self.task_output[name] = measure
             self._TASK_INTERNAL_STATE[f"_auto_threshold_{name}"] = OnlineNormalThreshold(
                 window_size=auto_window_size,
                 warmup_period=auto_warmup_period,
                 threshold_method=threshold_method
             )
+        elif must_be == "mdp":
+            config = {
+                "sample_capacity": 100,
+                "seed": 0,
+                "training_period": 5,
+                "warmup_period": 2,
+                "percentile": 0.60,
+                "decay_rate": 0.01,
+                "decay_period": 50
+            }
+            self.task_output[name] = measure
+            self._TASK_INTERNAL_STATE[f"_auto_threshold_{name}"] = MDPDetector(config)
         else:
             assessment_function = must_be if callable(must_be) else create_comparison_function(must_be)
             assessment_result = pw.apply_with_type(assessment_function, bool, measure)
@@ -293,13 +306,15 @@ class Task:
                     continue
                 else:
                     detector = self._TASK_INTERNAL_STATE[detector_key]
+                    if name == 'macrobase_max':
+                        assessment_results[f"{name}"] = detector.assess(measured_data, name)
+                    else:
+                        def auto_assessment_function(value):
+                            return detector.check_window(value)
 
-                    def auto_assessment_function(value):
-                        return detector.check_window(value)
-
-                    assessment_results[f"{name}"] = pw.apply_with_type(
-                        auto_assessment_function, str, measured_data[name]
-                    )
+                        assessment_results[f"{name}"] = pw.apply_with_type(
+                            auto_assessment_function, str, measured_data[name]
+                        )
 
                     if assessment_results:
                         measured_data = measured_data.with_columns(**assessment_results)

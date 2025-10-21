@@ -19,18 +19,20 @@ class OverweightItem:
 
 
 class AdaptableDampedReservoir:
-    def __init__(self, capacity: int = 1024, seed: Optional[int] = 0):
+    def __init__(self, capacity: int = 1024, seed: Optional[int] = 0, decay_rate = 0.1):
         if capacity <= 0:
             raise ValueError("capacity must be > 0")
 
         self.capacity: int = capacity
         self._rand = JavaRandom(seed)
 
-        self._reservoir: Deque[float] = deque(maxlen=capacity)
+        self._reservoir: Deque[object] = deque(maxlen=capacity)
         self._running_count: float = 0
         self.overweight_items: List[OverweightItem] = []
+        self.decay_rate = decay_rate
 
-    def insert(self, record: float, weight: float) -> None:
+
+    def insert(self, record:object, weight: float = 1.0) -> None:
         """
         Add a sample to the reservoir.
         If timestamp is None an internal monotonic index will be used.
@@ -81,7 +83,7 @@ class AdaptableDampedReservoir:
         for item in updated_overweight_items:
             heapq.heappush(self.overweight_items, item)
 
-    def get_sample(self) -> List[float]:
+    def get_sample(self) -> List[object]:
         """
         Get the current sample from the reservoir.
         """
@@ -99,3 +101,6 @@ class AdaptableDampedReservoir:
             return overweight_list + shuffled_reservoir[:remaining_records]
         else:
             return list(self._reservoir)
+
+    def advance_period(self, num_periods: int = 1):
+        self.decay_weights(math.pow(1-self.decay_rate, num_periods))
