@@ -2,6 +2,9 @@ from streamdaq.assessment_detectors.macrobase.models.AdaptableDampedReservoir im
 from streamdaq.assessment_detectors.macrobase.models.MADScorer import MADScorer
 
 class MADTrainer:
+    """
+    Class that trains a MAD model using ADR (sampling the stream).
+    """
     # State objects
     train_reservoir = None
     trainer = None
@@ -15,9 +18,9 @@ class MADTrainer:
     def __init__(self, config):
         self.train_reservoir = AdaptableDampedReservoir(capacity=config["sample_capacity"], seed=config["seed"], decay_rate=config["decay_rate"])
         self.trainer  = MADScorer()
+        self.warmup_input = []
         self.window_count = 0
         self.warmup_period = config["warmup_period"]
-        self.warmup_input = []
         self.decay_period = config["decay_period"]
         self.training_period = config["training_period"]
 
@@ -34,7 +37,6 @@ class MADTrainer:
                 self.train_reservoir.advance_period()
 
             if self.window_count == self.warmup_period:
-                self.trainer.train(self.train_reservoir.get_sample())
                 self.warmup_input.clear()
 
             return window, self.trainer.score(window)

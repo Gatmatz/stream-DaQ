@@ -152,9 +152,7 @@ class Task:
         measure: pw.ColumnExpression | ReducerExpression,
         must_be: str | Callable[[Any], bool] | None = None,
         name: Optional[str] = None,
-        auto_window_size: Optional[int] = None,
-        auto_warmup_period: int = 2,
-        threshold_method: str = "percentile"
+        config: dict | None = None
     ) -> Self:
         """
         Add a data quality check to be monitored within the stream windows.
@@ -173,21 +171,8 @@ class Task:
 
         if must_be == "online_normal":
             self.task_output[name] = measure
-            self._TASK_INTERNAL_STATE[f"_auto_threshold_{name}"] = OnlineNormalThreshold(
-                window_size=auto_window_size,
-                warmup_period=auto_warmup_period,
-                threshold_method=threshold_method
-            )
+            self._TASK_INTERNAL_STATE[f"_auto_threshold_{name}"] = OnlineNormalThreshold(config)
         elif must_be == "mdp":
-            config = {
-                "sample_capacity": 100,
-                "seed": 0,
-                "training_period": 5,
-                "warmup_period": 2,
-                "percentile": 0.60,
-                "decay_rate": 0.01,
-                "decay_period": 50
-            }
             self.task_output[name] = measure
             self._TASK_INTERNAL_STATE[f"_auto_threshold_{name}"] = MDPDetector(config)
         else:
@@ -306,15 +291,7 @@ class Task:
                     continue
                 else:
                     detector = self._TASK_INTERNAL_STATE[detector_key]
-                    if name == 'macrobase_max':
-                        assessment_results[f"{name}"] = detector.assess(measured_data, name)
-                    else:
-                        def auto_assessment_function(value):
-                            return detector.check_window(value)
-
-                        assessment_results[f"{name}"] = pw.apply_with_type(
-                            auto_assessment_function, str, measured_data[name]
-                        )
+                    assessment_results[f"{name}"] = detector.assess(measured_data, name)
 
                     if assessment_results:
                         measured_data = measured_data.with_columns(**assessment_results)

@@ -1,20 +1,21 @@
 import numpy as np
 from collections import deque
 
+import pathway as pw
 from streamdaq.assessment_detectors.ThresholdDetector import ThresholdDetector
 
 
 class OnlineNormalThreshold(ThresholdDetector):
     """Online assessment detector using running statistics."""
 
-    def __init__(self, window_size: int = 10, warmup_period: int = 10, threshold_method: str = "z_score"):
+    def __init__(self, config):
         super().__init__()
-        self.window_size = window_size
-        self.samples = deque(maxlen=window_size)
+        self.window_size = config["window_size"]
+        self.samples = deque(maxlen=self.window_size)
         self.sum = 0.0
         self.sum_sq = 0.0
-        self.warmup_period = warmup_period
-        self.threshold_method = threshold_method
+        self.warmup_period = config["warmup_period"]
+        self.threshold_method = config["threshold_method"]
         self.dynamic_threshold = 0.0
         self.windows_processed = 0
 
@@ -133,3 +134,9 @@ class OnlineNormalThreshold(ThresholdDetector):
 
         # Determine severity
         return self._get_anomaly_severity(score, threshold)
+
+    def assess(self, data: pw.Table, column: str) -> str:
+        def auto_assessment_function(value):
+            return self.check_window(value)
+
+        return pw.apply_with_type(auto_assessment_function, str, data[column])
