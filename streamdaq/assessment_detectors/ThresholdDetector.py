@@ -10,10 +10,9 @@ class ThresholdDetector(ABC):
         pass
 
     @abstractmethod
-    def check_window(self, window: int | float) -> str:
+    def assess(self, data: pw.Table, column: str) -> str:
         """
-        Driver function to check if the measure in the window breaches a dynamic threshold.
-        :param window: window of a column of a specific window
-        :return: assessment result
+        Assess the data in the specified column of the table.
+        :param column: column to assess
         """
         pass

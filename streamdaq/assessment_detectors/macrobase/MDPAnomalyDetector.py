@@ -43,15 +43,12 @@ class MDPAnomalyDetector:
             self.anomaly_ADR.insert(window)
 
             if self.window_count % (self.decay_period + 1) == 0:
-                print("Advancing period")
                 self.anomaly_ADR.advance_period()
 
             if self.window_count % (self.training_period + 1) == 0:
-                print("Updating threshold")
                 self.anomaly_threshold = self.update_anomaly_threshold(self.percentile)
 
             if self.window_count == self.warmup_period:
-                print("Clearing warmup data")
                 self.anomaly_threshold = self.update_anomaly_threshold(self.percentile)
                 self.warmup_input.clear()
 

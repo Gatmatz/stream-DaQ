@@ -2,11 +2,12 @@ from typing import Tuple
 
 import pathway as pw
 
+from streamdaq.assessment_detectors.ThresholdDetector import ThresholdDetector
 from streamdaq.assessment_detectors.macrobase.MADTrainer import MADTrainer
 from streamdaq.assessment_detectors.macrobase.MDPAnomalyDetector import MDPAnomalyDetector
 
 
-class MDPDetector:
+class MDPDetector(ThresholdDetector):
     mad_trainer = None
     anomaly_detector = None
 
