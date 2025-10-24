@@ -152,7 +152,7 @@ class Task:
         measure: pw.ColumnExpression | ReducerExpression,
         must_be: str | Callable[[Any], bool] | None = None,
         name: Optional[str] = None,
-        config: dict | None = None
+        config: Optional[dict | None] = None
     ) -> Self:
         """
         Add a data quality check to be monitored within the stream windows.
